@@ -59,6 +59,73 @@ fi
 
 CLONE_DIR=$(mktemp -d)
 
+# Allow git to safely run in any directory to bypass ownership issues in Docker
+git config --global --add safe.directory "*" || true
+
+ORIGIN_DIR="${GITHUB_WORKSPACE:-/github/workspace}"
+
+echo "[+] Origin directory ($ORIGIN_DIR) ls:"
+ls -al "$ORIGIN_DIR" || echo "Cannot ls $ORIGIN_DIR"
+
+if git -C "$ORIGIN_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	echo "[+] Git repo found, trying to get commit info via git"
+	UPSTREAM_TITLE=$(git -C "$ORIGIN_DIR" log -1 --format="%s" "$GITHUB_SHA" 2>/dev/null || git -C "$ORIGIN_DIR" log -1 --format="%s" 2>/dev/null || echo "")
+	UPSTREAM_BODY=$(git -C "$ORIGIN_DIR" log -1 --format="%b" "$GITHUB_SHA" 2>/dev/null || git -C "$ORIGIN_DIR" log -1 --format="%b" 2>/dev/null || echo "")
+else
+	echo "[+] No git repository found in $ORIGIN_DIR (possibly actions/checkout used without .git). Fetching from GitHub API."
+	UPSTREAM_TITLE=""
+	UPSTREAM_BODY=""
+fi
+
+if [ -z "$UPSTREAM_TITLE" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_SHA:-}" ]; then
+	echo "[+] Fetching commit data from GitHub API for $GITHUB_REPOSITORY@$GITHUB_SHA"
+	API_URL="https://api.$GITHUB_SERVER/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA"
+	
+	if [ -n "${API_TOKEN_GITHUB:-}" ]; then
+		API_RESPONSE=$(curl -s -H "Authorization: token $API_TOKEN_GITHUB" "$API_URL" || echo "")
+	else
+		API_RESPONSE=$(curl -s "$API_URL" || echo "")
+	fi
+	
+	if [ -n "$API_RESPONSE" ]; then
+		API_MESSAGE=$(echo "$API_RESPONSE" | jq -r '.commit.message' 2>/dev/null || echo "")
+		if [ "$API_MESSAGE" != "null" ] && [ -n "$API_MESSAGE" ]; then
+			UPSTREAM_TITLE=$(echo "$API_MESSAGE" | head -n 1)
+			UPSTREAM_BODY=$(echo "$API_MESSAGE" | tail -n +3)
+		fi
+	fi
+fi
+
+# Detect circular loops by checking if the upstream commit title already has our sync prefix
+if [[ "$UPSTREAM_TITLE" == "\[sync\]"* ]]; then
+	echo "::warning::The current commit is already a sync commit ('$UPSTREAM_TITLE'). Aborting push to prevent infinite loop."
+	exit 0
+fi
+
+if [ -z "$UPSTREAM_TITLE" ]; then
+	UPSTREAM_TITLE="Update from $GITHUB_REPOSITORY"
+fi
+
+if [ "$COMMIT_MESSAGE" = "Update from ORIGIN_COMMIT" ] || [ -z "$COMMIT_MESSAGE" ]; then
+	ORIGIN_COMMIT_URL="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+	COMMIT_MESSAGE="[sync] $UPSTREAM_TITLE
+	
+$UPSTREAM_BODY
+
+Upstream-commit: $ORIGIN_COMMIT_URL"
+else
+	ORIGIN_COMMIT="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+	COMMIT_MESSAGE="${COMMIT_MESSAGE/ORIGIN_COMMIT/$ORIGIN_COMMIT}"
+	COMMIT_MESSAGE="${COMMIT_MESSAGE/\$GITHUB_REF/$GITHUB_REF}"
+fi
+
+# Trim any trailing whitespace / empty vars so git commit ignores it correctly
+if [ -z "$(echo -n "$COMMIT_MESSAGE" | awk '{$1=$1};1')" ]; then
+    COMMIT_MESSAGE="Update from $GITHUB_REPOSITORY"
+fi
+
+echo "[+] Commit message is set to: $COMMIT_MESSAGE"
+
 echo "[+] Git version"
 git --version
 
@@ -209,33 +276,3 @@ done
 
 echo "[+] All pushes completed successfully"
 exit 0
-
-# Detect circular loops by checking if the upstream commit title already has our sync prefix
-if [[ "$UPSTREAM_TITLE" == "\[sync\]"* ]]; then
-	echo "::warning::The current commit is already a sync commit ('$UPSTREAM_TITLE'). Aborting push to prevent infinite loop."
-	exit 0
-fi
-
-if [ -z "$UPSTREAM_TITLE" ]; then
-	UPSTREAM_TITLE="Update from $GITHUB_REPOSITORY"
-fi
-
-if [ "$COMMIT_MESSAGE" = "Update from ORIGIN_COMMIT" ] || [ -z "$COMMIT_MESSAGE" ]; then
-	ORIGIN_COMMIT_URL="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
-	COMMIT_MESSAGE="[sync] $UPSTREAM_TITLE
-	
-$UPSTREAM_BODY
-
-Upstream-commit: $ORIGIN_COMMIT_URL"
-else
-	ORIGIN_COMMIT="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
-	COMMIT_MESSAGE="${COMMIT_MESSAGE/ORIGIN_COMMIT/$ORIGIN_COMMIT}"
-	COMMIT_MESSAGE="${COMMIT_MESSAGE/\$GITHUB_REF/$GITHUB_REF}"
-fi
-
-# Trim any trailing whitespace / empty vars so git commit ignores it correctly
-if [ -z "$(echo -n "$COMMIT_MESSAGE" | awk '{$1=$1};1')" ]; then
-     COMMIT_MESSAGE="Update from $GITHUB_REPOSITORY"
-fi
-
-echo "[+] Commit message is set to: $COMMIT_MESSAGE"
