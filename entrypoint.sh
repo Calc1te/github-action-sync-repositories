@@ -199,7 +199,7 @@ for DEST_REPO in $DESTINATION_REPOSITORY_NAME; do
 	git status
 
 	echo "[+] git diff-index:"
-	git diff-index --quiet HEAD || git commit --message "$COMMIT_MESSAGE"
+	git diff-index --quiet HEAD || git commit --message "$COMMIT_MESSAGE" --allow-empty-message
 
 	echo "[+] Pushing git commit to $DEST_REPO"
 	git push "$CURRENT_GIT_CMD_REPOSITORY" --set-upstream "$TARGET_BRANCH"
@@ -209,3 +209,33 @@ done
 
 echo "[+] All pushes completed successfully"
 exit 0
+
+# Detect circular loops by checking if the upstream commit title already has our sync prefix
+if [[ "$UPSTREAM_TITLE" == "\[sync\]"* ]]; then
+	echo "::warning::The current commit is already a sync commit ('$UPSTREAM_TITLE'). Aborting push to prevent infinite loop."
+	exit 0
+fi
+
+if [ -z "$UPSTREAM_TITLE" ]; then
+	UPSTREAM_TITLE="Update from $GITHUB_REPOSITORY"
+fi
+
+if [ "$COMMIT_MESSAGE" = "Update from ORIGIN_COMMIT" ] || [ -z "$COMMIT_MESSAGE" ]; then
+	ORIGIN_COMMIT_URL="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+	COMMIT_MESSAGE="[sync] $UPSTREAM_TITLE
+	
+$UPSTREAM_BODY
+
+Upstream-commit: $ORIGIN_COMMIT_URL"
+else
+	ORIGIN_COMMIT="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+	COMMIT_MESSAGE="${COMMIT_MESSAGE/ORIGIN_COMMIT/$ORIGIN_COMMIT}"
+	COMMIT_MESSAGE="${COMMIT_MESSAGE/\$GITHUB_REF/$GITHUB_REF}"
+fi
+
+# Trim any trailing whitespace / empty vars so git commit ignores it correctly
+if [ -z "$(echo -n "$COMMIT_MESSAGE" | awk '{$1=$1};1')" ]; then
+     COMMIT_MESSAGE="Update from $GITHUB_REPOSITORY"
+fi
+
+echo "[+] Commit message is set to: $COMMIT_MESSAGE"
