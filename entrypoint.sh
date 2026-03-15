@@ -127,7 +127,7 @@ for SRC_DIR in $SOURCE_DIRECTORY; do
 	echo "[+] Creating $ABSOLUTE_TARGET_DIRECTORY if it doesn't exist"
 	mkdir -p "$ABSOLUTE_TARGET_DIRECTORY"
 	
-	echo "[+] Copying contents of source repository folder $SRC_DIR to folder $TGT_DIR in git repo $DESTINATION_REPOSITORY_NAME"
+	echo "[+] Copying contents of source repository folder "$SRC_DIR" to folder "$TGT_DIR" in git repo $DESTINATION_REPOSITORY_NAME"
 	
 	if [ -n "$INCLUDE_PATTERNS_FILE" ] && [ -f "$INCLUDE_PATTERNS_FILE" ]; then
 		echo "[+] Using include patterns file: $INCLUDE_PATTERNS_FILE"

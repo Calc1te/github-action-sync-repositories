@@ -7,8 +7,9 @@ inputs:
     description: Source before directory from the origin directory
     required: false
   source-directory:
-    description: Source directory from the origin directory
-    required: true
+    description: '[Optional] Source directory from the origin directory. Defaults to "."'
+    required: false
+    default: '.'
   destination-github-username:
     description: Name of the destination username/organization
     required: true
