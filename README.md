@@ -71,3 +71,29 @@ The configuration file uses rsync filter syntax. Here are the most common and us
 # Match ALL files and folders recursively inside a specific directory
 + path/to/somewhere/***
 ```
+
+## sample action.yml
+
+```yml
+name: Sync
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    container: pandoc/latex
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push to another repo
+        uses: Calc1te/github-action-push-to-another-repository@main
+        env:
+          SSH_DEPLOY_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
+          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
+        with:
+          include-patterns-file: 'sync_files'
+          destination-github-username: 'John_Doe'
+          destination-repository-name: 'repository_1'
+          user-email: johnDoe@example.com
+          target-branch: main
+```
