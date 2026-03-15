@@ -45,7 +45,7 @@ inputs:
     default: ''
     required: false
   target-directory:
-    description: '[Optional] The directory to wipe and replace in the target repository'
+    description: '[Optional] The directory to wipe and replace in the target repository, split with space. All repo need to have the same owner'
     default: ''
     required: false
   include-patterns-file:

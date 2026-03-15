@@ -101,130 +101,111 @@ ls -al
 echo "[+] Listing root Location"
 ls -al /
 
+# -------------------------------------------------------------
+# Handle multi-repository pushing if multiple target directories
+# and destination repositories are provided
+# -------------------------------------------------------------
+
 TGT_STR="$TARGET_DIRECTORY "
+# Create a string for destination repos just in case we want to split them, but we will mostly just map them
+DEST_REPOS_STR="$DESTINATION_REPOSITORY_NAME "
 
-for SRC_DIR in $SOURCE_DIRECTORY; do
-	if [ -z "$TARGET_DIRECTORY" ]; then
-		TGT_DIR="$SRC_DIR"
-	else
-		TGT_DIR="${TGT_STR%% *}"
-		TGT_STR="${TGT_STR#* }"
-	fi
+# Create a master clone dir to hold multiple clones if needed
+MASTER_CLONE_DIR=$(mktemp -d)
 
-	echo "[+] List contents of $SRC_DIR"
-	ls -a "$SRC_DIR" || true
-
-	echo "[+] Checking if local $SRC_DIR exist"
-	if [ ! -d "$SRC_DIR" ]
+# We will loop over destination repos if space separated, or just use one
+for DEST_REPO in $DESTINATION_REPOSITORY_NAME; do
+	
+	CURRENT_CLONE_DIR="$MASTER_CLONE_DIR/$DEST_REPO"
+	mkdir -p "$CURRENT_CLONE_DIR"
+	
+	echo "[+] Setting up push for $DEST_REPO"
+	
+	if [ -n "${SSH_DEPLOY_KEY:=}" ]
 	then
-		echo "ERROR: $SRC_DIR does not exist"
-		echo "This directory needs to exist when push-to-another-repository is executed"
+		CURRENT_GIT_CMD_REPOSITORY="git@$GITHUB_SERVER:$DESTINATION_REPOSITORY_USERNAME/$DEST_REPO.git"
+	else
+		CURRENT_GIT_CMD_REPOSITORY="https://$DESTINATION_REPOSITORY_USERNAME:$API_TOKEN_GITHUB@$GITHUB_SERVER/$DESTINATION_REPOSITORY_USERNAME/$DEST_REPO.git"
+	fi
+	
+	{
+		git clone --single-branch --depth 1 --branch "$TARGET_BRANCH" "$CURRENT_GIT_CMD_REPOSITORY" "$CURRENT_CLONE_DIR"
+	} || {
+		if [ "$CREATE_TARGET_BRANCH_IF_NEEDED" = "true" ]
+		then
+			git clone --single-branch --depth 1 "$CURRENT_GIT_CMD_REPOSITORY" "$CURRENT_CLONE_DIR"
+		else
+			false
+		fi
+	} || {
+		echo "::error::Could not clone the destination repository $DEST_REPO."
 		exit 1
+	}
+	
+	# Related to safe directory
+	git config --global --add safe.directory "$CURRENT_CLONE_DIR"
+	
+	# Loop over source directories (we apply ALL source directories to each target repo inside this loop as a one-to-one mapping if space separated)
+	TEMP_TGT_STR="$TARGET_DIRECTORY "
+	
+	for SRC_DIR in $SOURCE_DIRECTORY; do
+		if [ -z "$TARGET_DIRECTORY" ]; then
+			TGT_DIR="$SRC_DIR"
+		else
+			TGT_DIR="${TEMP_TGT_STR%% *}"
+			TEMP_TGT_STR="${TEMP_TGT_STR#* }"
+		fi
+
+		echo "[+] List contents of $SRC_DIR"
+		ls -a "$SRC_DIR" || true
+
+		echo "[+] Checking if local $SRC_DIR exist"
+		if [ ! -d "$SRC_DIR" ]
+		then
+			echo "ERROR: $SRC_DIR does not exist"
+			exit 1
+		fi
+
+		ABSOLUTE_TARGET_DIRECTORY="$CURRENT_CLONE_DIR/$TGT_DIR/"
+		
+		echo "[+] Creating $ABSOLUTE_TARGET_DIRECTORY if it doesn't exist"
+		mkdir -p "$ABSOLUTE_TARGET_DIRECTORY"
+		
+		echo "[+] Copying contents of source repository folder "$SRC_DIR" to folder "$TGT_DIR" in git repo $DEST_REPO"
+		
+		if [ -n "$INCLUDE_PATTERNS_FILE" ] && [ -f "$INCLUDE_PATTERNS_FILE" ]; then
+			echo "[+] Using include patterns file: $INCLUDE_PATTERNS_FILE"
+			rsync -a --prune-empty-dirs --include="*/" --include-from="$INCLUDE_PATTERNS_FILE" --exclude="*" "$SRC_DIR/" "$ABSOLUTE_TARGET_DIRECTORY/"
+		else
+			cp -ra "$SRC_DIR"/. "$ABSOLUTE_TARGET_DIRECTORY"
+		fi
+	done
+
+	cd "$CURRENT_CLONE_DIR"
+
+	echo "[+] Files that will be pushed to $DEST_REPO"
+	ls -la
+
+	if [ "$CREATE_TARGET_BRANCH_IF_NEEDED" = "true" ]
+	then
+		echo "[+] Switch to the TARGET_BRANCH"
+		git switch -c "$TARGET_BRANCH" || true
 	fi
 
-	ABSOLUTE_TARGET_DIRECTORY="$CLONE_DIR/$TGT_DIR/"
+	echo "[+] Adding git commit"
+	git add .
+
+	echo "[+] git status:"
+	git status
+
+	echo "[+] git diff-index:"
+	git diff-index --quiet HEAD || git commit --message "$COMMIT_MESSAGE"
+
+	echo "[+] Pushing git commit to $DEST_REPO"
+	git push "$CURRENT_GIT_CMD_REPOSITORY" --set-upstream "$TARGET_BRANCH"
 	
-	echo "[+] Creating $ABSOLUTE_TARGET_DIRECTORY if it doesn't exist"
-	mkdir -p "$ABSOLUTE_TARGET_DIRECTORY"
-	
-	echo "[+] Copying contents of source repository folder "$SRC_DIR" to folder "$TGT_DIR" in git repo $DESTINATION_REPOSITORY_NAME"
-	
-	if [ -n "$INCLUDE_PATTERNS_FILE" ] && [ -f "$INCLUDE_PATTERNS_FILE" ]; then
-		echo "[+] Using include patterns file: $INCLUDE_PATTERNS_FILE"
-		# Use rsync to only include files matching the patterns in the file
-		# We include "*/" first so rsync will traverse into directories, 
-		# then your include patterns, then exclude everything else.
-		rsync -a --prune-empty-dirs --include="*/" --include-from="$INCLUDE_PATTERNS_FILE" --exclude="*" "$SRC_DIR/" "$ABSOLUTE_TARGET_DIRECTORY/"
-	else
-		cp -ra "$SRC_DIR"/. "$ABSOLUTE_TARGET_DIRECTORY"
-	fi
+	cd - > /dev/null
 done
 
-cd "$CLONE_DIR"
-
-echo "[+] Files that will be pushed"
-ls -la
-
-# Allow git to safely run in any directory to bypass ownership issues in Docker
-git config --global --add safe.directory "*" || true
-
-ORIGIN_DIR="${GITHUB_WORKSPACE:-/github/workspace}"
-
-echo "[+] Origin directory ($ORIGIN_DIR) ls:"
-ls -al "$ORIGIN_DIR" || echo "Cannot ls $ORIGIN_DIR"
-
-if git -C "$ORIGIN_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-	echo "[+] Git repo found, trying to get commit info via git"
-	UPSTREAM_TITLE=$(git -C "$ORIGIN_DIR" log -1 --format="%s" "$GITHUB_SHA" 2>/dev/null || git -C "$ORIGIN_DIR" log -1 --format="%s" 2>/dev/null || echo "")
-	UPSTREAM_BODY=$(git -C "$ORIGIN_DIR" log -1 --format="%b" "$GITHUB_SHA" 2>/dev/null || git -C "$ORIGIN_DIR" log -1 --format="%b" 2>/dev/null || echo "")
-else
-	echo "[+] No git repository found in $ORIGIN_DIR (possibly actions/checkout used without .git). Fetching from GitHub API."
-	UPSTREAM_TITLE=""
-	UPSTREAM_BODY=""
-fi
-
-if [ -z "$UPSTREAM_TITLE" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_SHA:-}" ]; then
-	echo "[+] Fetching commit data from GitHub API for $GITHUB_REPOSITORY@$GITHUB_SHA"
-	API_URL="https://api.$GITHUB_SERVER/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA"
-	
-	# Try to fetch using API_TOKEN_GITHUB if available, otherwise anonymously
-	if [ -n "${API_TOKEN_GITHUB:-}" ]; then
-		API_RESPONSE=$(curl -s -H "Authorization: token $API_TOKEN_GITHUB" "$API_URL" || echo "")
-	else
-		API_RESPONSE=$(curl -s "$API_URL" || echo "")
-	fi
-	
-	if [ -n "$API_RESPONSE" ]; then
-		API_MESSAGE=$(echo "$API_RESPONSE" | jq -r '.commit.message' 2>/dev/null || echo "")
-		if [ "$API_MESSAGE" != "null" ] && [ -n "$API_MESSAGE" ]; then
-			# First line is title, rest is body
-			UPSTREAM_TITLE=$(echo "$API_MESSAGE" | head -n 1)
-			UPSTREAM_BODY=$(echo "$API_MESSAGE" | tail -n +3) # +3 skips title and empty line
-		fi
-	fi
-fi
-
-if [ -z "$UPSTREAM_TITLE" ]; then
-	UPSTREAM_TITLE="Update from $GITHUB_REPOSITORY"
-fi
-
-if [ "$COMMIT_MESSAGE" = "Update from ORIGIN_COMMIT" ] || [ -z "$COMMIT_MESSAGE" ]; then
-	ORIGIN_COMMIT_URL="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
-	COMMIT_MESSAGE="[sync] $UPSTREAM_TITLE
-
-$UPSTREAM_BODY
-
-Upstream-commit: $ORIGIN_COMMIT_URL"
-else
-	ORIGIN_COMMIT="https://$GITHUB_SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
-	COMMIT_MESSAGE="${COMMIT_MESSAGE/ORIGIN_COMMIT/$ORIGIN_COMMIT}"
-	COMMIT_MESSAGE="${COMMIT_MESSAGE/\$GITHUB_REF/$GITHUB_REF}"
-fi
-
-echo "[+] Set directory is safe ($CLONE_DIR)"
-# Related to https://github.com/cpina/github-action-push-to-another-repository/issues/64
-git config --global --add safe.directory "$CLONE_DIR"
-
-if [ "$CREATE_TARGET_BRANCH_IF_NEEDED" = "true" ]
-then
-    echo "[+] Switch to the TARGET_BRANCH"
-    # || true: if the $TARGET_BRANCH already existed in the destination repo:
-    # it is already the current branch and it cannot be switched to
-    # (it's not needed)
-    # If the branch did not exist: it switches (creating) the branch
-    git switch -c "$TARGET_BRANCH" || true
-fi
-
-echo "[+] Adding git commit"
-git add .
-
-echo "[+] git status:"
-git status
-
-echo "[+] git diff-index:"
-# git diff-index : to avoid doing the git commit failing if there are no changes to be commit
-git diff-index --quiet HEAD || git commit --message "$COMMIT_MESSAGE"
-
-echo "[+] Pushing git commit"
-# --set-upstream: sets de branch when pushing to a branch that does not exist
-git push "$GIT_CMD_REPOSITORY" --set-upstream "$TARGET_BRANCH"
+echo "[+] All pushes completed successfully"
+exit 0
