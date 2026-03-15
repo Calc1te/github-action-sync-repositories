@@ -103,8 +103,12 @@ ls -al /
 TGT_STR="$TARGET_DIRECTORY "
 
 for SRC_DIR in $SOURCE_DIRECTORY; do
-	TGT_DIR="${TGT_STR%% *}"
-	TGT_STR="${TGT_STR#* }"
+	if [ -z "$TARGET_DIRECTORY" ]; then
+		TGT_DIR="$SRC_DIR"
+	else
+		TGT_DIR="${TGT_STR%% *}"
+		TGT_STR="${TGT_STR#* }"
+	fi
 
 	echo "[+] List contents of $SRC_DIR"
 	ls -a "$SRC_DIR" || true
